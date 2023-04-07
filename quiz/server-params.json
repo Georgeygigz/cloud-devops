@@ -1,0 +1,18 @@
+[
+    {
+        "ParameterKey": "EnvironmentName",
+        "ParameterValue": "UdacityQuiz"
+    },
+    {
+        "ParameterKey": "MyVPC",
+        "ParameterValue": "vpc-006597e7f208c19eb"
+    },
+    {
+        "ParameterKey": "SubnetForServer",
+        "ParameterValue": "subnet-0e97a7fcd83bb26ef"
+    },
+    {
+        "ParameterKey": "AMItoUse",
+        "ParameterValue": "ami-00c39f71452c08778"
+    }
+]
