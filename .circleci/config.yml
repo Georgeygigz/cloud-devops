@@ -2,6 +2,17 @@ version: 2.1
 orbs:
   welcome: circleci/welcome-orb@0.4.1
 
+commands:
+  destroy_environment:
+    steps:
+      - run:
+          name: Destroy environment
+          # ${CIRCLE_WORKFLOW_ID} is a Built-in environment variable
+          # ${CIRCLE_WORKFLOW_ID:0:5} takes the first 5 chars of the variable CIRCLE_CI_WORKFLOW_ID
+          when: on_fail
+          command: |
+            aws cloudformation delete-stack --stack-name myStack-${CIRCLE_WORKFLOW_ID:0:5}
+
 jobs:
   save_hello_world_output:
     docker:
@@ -17,14 +28,125 @@ jobs:
       - image: circleci/node:13.8.0
     steps:
       - attach_workspace:
-        at: ~/
+          at: ~/
       - run: cat ~/output.txt
 
+  create_infrastructure:
+    docker:
+      - image: amazon/aws-cli
+    steps:
+      - checkout
+      - run:
+          name: Create Cloudformation Stack
+          command: |
+            aws cloudformation deploy \
+              --template-file template.yml \
+              --stack-name myStack-${CIRCLE_WORKFLOW_ID:0:5} \
+              --region us-east-1
+      # Fail the job intentionally to simulate an error.
+      # Uncomment the line below if you want to fail the current step
+      - run: return 1
+      - destroy_environment
+
+  create_and_deploy_front_end:
+    docker:
+      - image: amazon/aws-cli
+    steps:
+      - checkout
+      - run:
+          name: Execute bucket.yml - Create Cloudformation Stack
+          command: |
+            aws cloudformation deploy \
+            --template-file bucket.yml \
+            --stack-name stack-create-bucket-${CIRCLE_WORKFLOW_ID:0:7} \
+            --parameter-overrides MyBucketName="mybucket-${CIRCLE_WORKFLOW_ID:0:7}" 
+      # - run: aws s3 sync . s3://mybucket-${CIRCLE_WORKFLOW_ID:0:7} --delete
+
+  get_last_deployment_id:
+    docker:
+      - image: amazon/aws-cli
+    steps:
+      - checkout
+      - run: yum install -y tar gzip
+      - run:
+          name: Fetch and save the old pipeline ID (bucket name) responsible for the last release.
+          command: |
+            aws cloudformation \
+            list-exports --query "Exports[?Name==\`PipelineID\`].Value" \
+            --no-paginate --output text > ~/textfile.txt
+      - persist_to_workspace:
+         root: ~/
+         paths:
+           - textfile.txt
+
+  promote_to_production:
+    docker:
+      - image: amazon/aws-cli
+    steps:
+      - checkout
+      - run:
+          name: Execute cloudfront.yml
+          command: |
+            aws cloudformation deploy \
+            --template-file cloudfront.yml \
+            --stack-name production-distro  \
+            --parameter-overrides PipelineID="mybucket-${CIRCLE_WORKFLOW_ID:0:7}"
+
+  clean_up_old_front_end:
+    docker:
+      - image: amazon/aws-cli
+    steps:
+      - checkout
+      - run: yum install -y tar gzip
+      - attach_workspace:
+          at: ~/
+      - run:
+          name: Destroy the previous S3 bucket and CloudFormation stack.
+          command: |
+            export OldBucketID=$(cat ~/textfile.txt)
+            aws s3 rm "s3://${OldBucketID}" --recursive
+
+  configure_infrastructure:
+    docker:
+      - image: python:3.11-rc-alpine
+    steps:
+      - checkout
+      - add_ssh_keys:
+          fingerprints: ["e4:2d:aa:86:20:80:ff:83:0c:44:6e:a2:88:73:1d:6c:7a:e6:d7:82"]
+      - run:
+          name: Install Ansible
+          command: |
+            apk add --update ansible
+      - run:
+          name: Run Playbook and Configure server
+          command: |
+            ansible-playbook -i inventory.txt main-remote.yml
+
+  smoke_test:
+    docker:
+      - image: alpine:latest
+    steps:
+      - checkout
+      - run: apk add --update curl
+      - run:
+          name: simulate error
+          command: |
+            echo "Hello"
+      - destroy_environment
+
 workflows:
-  welcome:
+  my_workflow:
     jobs:
-      - welcome/run
-      - save_hello_world_output
-      - print_out_file:
+      # - welcome/run
+      # - create_infrastructure
+      # - configure_infrastructure
+      # - smoke_test
+      - create_and_deploy_front_end
+      - promote_to_production:
           requires:
-            - save_hello_world_output
+            - create_and_deploy_front_end
+      - get_last_deployment_id
+      - clean_up_old_front_end:
+          requires:
+            - get_last_deployment_id
+            - promote_to_production
